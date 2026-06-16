@@ -1,0 +1,29 @@
+{
+  "contracts": [
+    {
+      "contractAddress": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "events": [
+        {
+          "eventName": "bandwidth_capacity",
+          "topics": ["bandwidth_capacity"],
+          "decode": { "percentage": "u32" }
+        },
+        {
+          "eventName": "escrow_balance_low",
+          "topics": ["escrow_balance_low"],
+          "decode": { "amount": "i128", "asset": "string" }
+        },
+        {
+          "eventName": "token_streamed",
+          "topics": ["token_streamed"],
+          "decode": { "recipient": "address", "amount": "i128" }
+        },
+        {
+          "eventName": "vault_unlocked",
+          "topics": ["vault_unlocked"],
+          "decode": { "beneficiary": "address", "amount": "i128" }
+        }
+      ]
+    }
+  ]
+}
