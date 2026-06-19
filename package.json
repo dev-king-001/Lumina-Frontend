@@ -15,7 +15,9 @@
     "test:optimistic": "tsx src/lib/__tests__/OptimisticTransactionManager.test.ts",
     "test:cache": "tsx src/services/__tests__/localCache.test.ts",
     "test:queue": "tsx src/lib/__tests__/txQueue.test.ts",
-    "test:all": "tsx src/lib/__tests__/offlineQueue.test.ts && tsx src/lib/__tests__/OptimisticTransactionManager.test.ts && tsx src/services/__tests__/localCache.test.ts && tsx src/lib/__tests__/txQueue.test.ts"
+    "test:sliding-window": "tsx src/lib/__tests__/slidingWindow.test.ts",
+    "test:e2e": "playwright test",
+    "test:all": "tsx src/lib/__tests__/offlineQueue.test.ts && tsx src/lib/__tests__/OptimisticTransactionManager.test.ts && tsx src/services/__tests__/localCache.test.ts && tsx src/lib/__tests__/txQueue.test.ts && tsx src/lib/__tests__/slidingWindow.test.ts"
   },
   "dependencies": {
     "@serwist/next": "^9.5.11",
@@ -25,6 +27,7 @@
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "recharts": "^3.8.1",
     "serwist": "^9.5.11"
   },
   "devDependencies": {
