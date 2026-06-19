@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * XSS Injection Tests
+ * XSS Sanitization Tests
  *
  * These tests verify that the sanitizer correctly neutralises XSS payloads
  * in node labels, descriptions, and metadata fields that originate from
@@ -9,13 +9,19 @@ import { test, expect } from "@playwright/test";
  *
  * Strategy:
  * - Navigate to /node-list-demo which renders NodeCard/NodeList with mock
- *   on-chain data containing HTML formatting tags (b, i).
+ *   on-chain data and exposes sanitizeNodeString on window.__sanitizeNodeString__
  * - Verify that allowed tags survive but dangerous patterns are stripped.
- * - Use page.evaluate to test sanitizeNodeString and detectDangerPatterns
- *   directly via the app's runtime.
+ * - Use page.evaluate to call sanitizeNodeString directly on various payloads.
  */
 
-const ALICE_PK = "GALICEXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXMOCK";
+const XSS_PAYLOADS: Record<string, string> = {
+  scriptTag: '<script>alert("xss")</script>',
+  eventHandler: '<img src=x onerror="alert(1)">',
+  javaScriptUri: '<a href="javascript:alert(1)">click</a>',
+  iframe: '<iframe src="https://evil.com"></iframe>',
+  encodedScript: "&lt;script&gt;alert(1)&lt;/script&gt;",
+  homoglyph: "＜script＞alert(1)＜/script＞",
+};
 
 test.describe("XSS Sanitization — NodeCard rendering", () => {
   test("NodeCard renders node labels with allowed formatting tags", async ({
@@ -26,10 +32,6 @@ test.describe("XSS Sanitization — NodeCard rendering", () => {
       state: "attached",
     });
 
-    // The SFO node label is defined as '<b>SFO</b> Edge Router'
-    // The <b> tag should survive (it's allowed);
-
-    // Find the SFO node card
     const sfoCard = page.locator('[data-node-id="node-002-sfo-edge"]');
     await expect(sfoCard).toBeVisible();
 
@@ -50,81 +52,11 @@ test.describe("XSS Sanitization — NodeCard rendering", () => {
     const sfoCard = page.locator('[data-node-id="node-002-sfo-edge"]');
     const cardHTML = await sfoCard.innerHTML();
 
-    // The description 'West coast relay node for <i>Pacific</i> traffic'
-    // should have the <i> tag intact
+    // The <i> tag should survive in the description
     expect(cardHTML).toContain("<i>Pacific</i>");
   });
 
-  test("Sanitizer strips dangerous patterns when injected via evaluate", async ({
-    page,
-  }) => {
-    await page.goto("/node-list-demo");
-    await page.waitForSelector("[data-testid=node-card]", {
-      state: "attached",
-    });
-
-    // Directly test the sanitizer function at runtime
-    const result = await page.evaluate(() => {
-      // Dynamically import the module (it's webpack-bundled, find it)
-      // Since we can't directly import, we test via DOM injection pattern
-      // that mirrors what NodeCard does internally.
-
-      // Simulate: create a container, inject a malicious string via
-      // innerHTML, and check that scripts don't execute.
-      const container = document.createElement("div");
-      container.id = "xss-test-runtime";
-      container.style.display = "none";
-
-      // Dangerous payloads — these should all be stripped
-      const tests = [
-        {
-          name: "script-tag",
-          payload: '<script>window.__XSS_TEST__ = true;</script>',
-        },
-        {
-          name: "event-handler",
-          payload: '<img src=x onerror="window.__XSS_TEST__ = true">',
-        },
-        {
-          name: "javascript-uri",
-          payload: '<a href="javascript:window.__XSS_TEST__ = true">click</a>',
-        },
-        {
-          name: "iframe",
-          payload: '<iframe src="https://evil.com"></iframe>',
-        },
-      ];
-
-      const results: Record<string, boolean> = {};
-      window.__XSS_TEST__ = false;
-
-      for (const { name, payload } of tests) {
-        window.__XSS_TEST__ = false;
-        container.innerHTML = payload;
-        document.body.appendChild(container);
-
-        // If the script executed, __XSS_TEST__ would be true
-        results[name] = window.__XSS_TEST__ === false;
-
-        // Cleanup
-        document.body.removeChild(container);
-      }
-
-      window.__XSS_TEST__ = false;
-
-      return results;
-    });
-
-    // All payloads should have been blocked
-    expect(result["script-tag"]).toBe(true);
-    expect(result["event-handler"]).toBe(true);
-    expect(result["javascript-uri"]).toBe(true);
-    expect(result["iframe"]).toBe(true);
-  });
-
-  test("NodeCard aria-label does not contain HTML tags", async ({
-    page,
-  }) => {
+  test("NodeCard aria-label strips HTML tags", async ({ page }) => {
     await page.goto("/node-list-demo");
     await page.waitForSelector("[data-testid=node-card]", {
       state: "attached",
@@ -133,149 +65,158 @@ test.describe("XSS Sanitization — NodeCard rendering", () => {
     const sfoCard = page.locator('[data-node-id="node-002-sfo-edge"]');
     const ariaLabel = await sfoCard.getAttribute("aria-label");
 
-    // aria-label should be plain text, not contain HTML
+    // aria-label should be plain text without HTML tags
     expect(ariaLabel).not.toContain("<b>");
     expect(ariaLabel).not.toContain("<i>");
     expect(ariaLabel).toContain("SFO Edge Router");
   });
 });
 
-test.describe("XSS Sanitization — QR config summary", () => {
-  async function initProvisioningPage(
-    page: import("@playwright/test").Page,
-    publicKey: string,
-  ) {
-    await page.addInitScript(
-      (args: { pk: string }) => {
-        (window as Record<string, unknown>).freighter = {
-          isConnected: async () => ({ isConnected: true }),
-          getUserInfo: async () => ({ publicKey: args.pk }),
-          signTransaction: async (xdr: string) => ({ signedTxXdr: xdr }),
-          signAuthEntry: async (authEntry: string) => ({
-            signedAuthEntry: authEntry,
-          }),
-        };
-      },
-      { pk: publicKey },
-    );
-    await page.goto("/onboarding");
-    await page.waitForSelector("[data-testid=wallet-indicator]", {
+test.describe("XSS Sanitization — sanitizeNodeString direct testing", () => {
+  test("sanitizeNodeString strips script tags", async ({ page }) => {
+    await page.goto("/node-list-demo");
+    await page.waitForSelector("[data-testid=node-card]", {
       state: "attached",
     });
-    await page.waitForTimeout(800);
-    await page.evaluate(() =>
-      window.dispatchEvent(new Event("accountChange")),
-    );
-    await page.waitForTimeout(1000);
-  }
 
-  test("QR config summary sanitizes script tags in node name", async ({
-    page,
-  }) => {
-    await initProvisioningPage(page, ALICE_PK);
+    const result = await page.evaluate((payload: string) => {
+      const fn = (window as Record<string, unknown>)
+        .__sanitizeNodeString__ as (dirty: string) => string;
+      if (!fn) return { error: "sanitizeNodeString not exposed" };
+      return { sanitized: fn(payload) };
+    }, XSS_PAYLOADS.scriptTag);
 
-    await page
-      .locator("[data-testid=node-name-input]")
-      .fill('<script>alert("xss")</script>');
-    await page
-      .locator("[data-testid=node-location-input]")
-      .fill("San Francisco, US");
-    await page
-      .locator("[data-testid=node-model-input]")
-      .fill("Lumina LR-200");
-
-    await page.locator("[data-testid=generate-qr-button]").click();
-    await expect(page.locator("[data-testid=qr-canvas]")).toBeVisible();
-    await expect(
-      page.locator("[data-testid=qr-config-summary]"),
-    ).toBeVisible();
-
-    const summaryHTML = await page
-      .locator("[data-testid=qr-config-summary]")
-      .innerHTML();
-
-    // Script tags should be fully stripped
-    expect(summaryHTML).not.toContain("<script>");
-    expect(summaryHTML).not.toContain("</script>");
+    expect(result).toHaveProperty("sanitized");
+    // Script tags should be stripped
+    expect(result.sanitized).not.toContain("<script>");
+    expect(result.sanitized).not.toContain("</script>");
+    // Inner text may survive (depends on KEEP_CONTENT)
   });
 
-  test("QR config summary sanitizes event handler in location", async ({
-    page,
-  }) => {
-    await initProvisioningPage(page, ALICE_PK);
+  test("sanitizeNodeString strips event handlers", async ({ page }) => {
+    await page.goto("/node-list-demo");
+    await page.waitForSelector("[data-testid=node-card]", {
+      state: "attached",
+    });
 
-    await page.locator("[data-testid=node-name-input]").fill("test-node");
-    await page
-      .locator("[data-testid=node-location-input]")
-      .fill('<img src=x onerror="alert(1)">');
-    await page
-      .locator("[data-testid=node-model-input]")
-      .fill("Lumina LR-200");
+    const result = await page.evaluate((payload: string) => {
+      const fn = (window as Record<string, unknown>)
+        .__sanitizeNodeString__ as (dirty: string) => string;
+      return { sanitized: fn(payload) };
+    }, XSS_PAYLOADS.eventHandler);
 
-    await page.locator("[data-testid=generate-qr-button]").click();
-    await expect(
-      page.locator("[data-testid=qr-config-summary]"),
-    ).toBeVisible();
-
-    const summaryHTML = await page
-      .locator("[data-testid=qr-config-summary]")
-      .innerHTML();
-
-    expect(summaryHTML).not.toContain("onerror");
-    expect(summaryHTML).not.toContain("onmouseover");
-    expect(summaryHTML).not.toContain("<img");
+    expect(result.sanitized).not.toContain("onerror");
+    expect(result.sanitized).not.toContain("<img");
+    expect(result.sanitized).not.toContain("onmouseover");
   });
 
-  test("QR config summary sanitizes JavaScript URI in model", async ({
-    page,
-  }) => {
-    await initProvisioningPage(page, ALICE_PK);
+  test("sanitizeNodeString strips JavaScript URIs", async ({ page }) => {
+    await page.goto("/node-list-demo");
+    await page.waitForSelector("[data-testid=node-card]", {
+      state: "attached",
+    });
 
-    await page.locator("[data-testid=node-name-input]").fill("test-node");
-    await page
-      .locator("[data-testid=node-location-input]")
-      .fill("Test Location");
-    await page
-      .locator("[data-testid=node-model-input]")
-      .fill('<a href="javascript:alert(1)">click</a>');
+    const result = await page.evaluate((payload: string) => {
+      const fn = (window as Record<string, unknown>)
+        .__sanitizeNodeString__ as (dirty: string) => string;
+      return { sanitized: fn(payload) };
+    }, XSS_PAYLOADS.javaScriptUri);
 
-    await page.locator("[data-testid=generate-qr-button]").click();
-    await expect(
-      page.locator("[data-testid=qr-config-summary]"),
-    ).toBeVisible();
-
-    const summaryHTML = await page
-      .locator("[data-testid=qr-config-summary]")
-      .innerHTML();
-
-    expect(summaryHTML).not.toContain("javascript:");
+    expect(result.sanitized).not.toContain("javascript:");
   });
 
-  test("Encoded HTML entities are not reinterpreted as real tags", async ({
+  test("sanitizeNodeString strips iframe tags", async ({ page }) => {
+    await page.goto("/node-list-demo");
+    await page.waitForSelector("[data-testid=node-card]", {
+      state: "attached",
+    });
+
+    const result = await page.evaluate((payload: string) => {
+      const fn = (window as Record<string, unknown>)
+        .__sanitizeNodeString__ as (dirty: string) => string;
+      return { sanitized: fn(payload) };
+    }, XSS_PAYLOADS.iframe);
+
+    expect(result.sanitized).not.toContain("<iframe");
+  });
+
+  test("sanitizeNodeString neutralizes encoded HTML entities", async ({
     page,
   }) => {
-    await initProvisioningPage(page, ALICE_PK);
+    await page.goto("/node-list-demo");
+    await page.waitForSelector("[data-testid=node-card]", {
+      state: "attached",
+    });
 
-    await page
-      .locator("[data-testid=node-name-input]")
-      .fill("&lt;script&gt;alert(1)&lt;/script&gt;");
-    await page
-      .locator("[data-testid=node-location-input]")
-      .fill("Test Location");
-    await page
-      .locator("[data-testid=node-model-input]")
-      .fill("Lumina LR-200");
+    const result = await page.evaluate((payload: string) => {
+      const fn = (window as Record<string, unknown>)
+        .__sanitizeNodeString__ as (dirty: string) => string;
+      return { sanitized: fn(payload) };
+    }, XSS_PAYLOADS.encodedScript);
 
-    await page.locator("[data-testid=generate-qr-button]").click();
-    await expect(
-      page.locator("[data-testid=qr-config-summary]"),
-    ).toBeVisible();
+    // Encoded entities should NOT decode into real script tags
+    expect(result.sanitized).not.toContain("<script>");
+    expect(result.sanitized).not.toContain("</script>");
+  });
 
-    const summaryHTML = await page
-      .locator("[data-testid=qr-config-summary]")
-      .innerHTML();
+  test("sanitizeNodeString handles Unicode homoglyph attacks", async ({
+    page,
+  }) => {
+    await page.goto("/node-list-demo");
+    await page.waitForSelector("[data-testid=node-card]", {
+      state: "attached",
+    });
 
-    // Encoded entities should not become real script tags
-    expect(summaryHTML).not.toContain("<script>");
+    const result = await page.evaluate((payload: string) => {
+      const fn = (window as Record<string, unknown>)
+        .__sanitizeNodeString__ as (dirty: string) => string;
+      return { sanitized: fn(payload) };
+    }, XSS_PAYLOADS.homoglyph);
+
+    // Homoglyph characters should not produce functional HTML tags
+    expect(result.sanitized).not.toMatch(/<script[^>]*>/i);
+  });
+
+  test("sanitizeNodeString preserves allowed formatting tags", async ({
+    page,
+  }) => {
+    await page.goto("/node-list-demo");
+    await page.waitForSelector("[data-testid=node-card]", {
+      state: "attached",
+    });
+
+    const result = await page.evaluate(() => {
+      const fn = (window as Record<string, unknown>)
+        .__sanitizeNodeString__ as (dirty: string) => string;
+      return { sanitized: fn("<b>Bold</b> and <i>italic</i> text") };
+    });
+
+    // Allowed tags should survive
+    expect(result.sanitized).toContain("<b>");
+    expect(result.sanitized).toContain("<i>");
+    // Dangerous tags should NOT survive even if mixed in
+    expect(result.sanitized).not.toContain("<script>");
+  });
+
+  test("sanitizeNodeString adds rel attributes to anchor tags", async ({
+    page,
+  }) => {
+    await page.goto("/node-list-demo");
+    await page.waitForSelector("[data-testid=node-card]", {
+      state: "attached",
+    });
+
+    const result = await page.evaluate(() => {
+      const fn = (window as Record<string, unknown>)
+        .__sanitizeNodeString__ as (dirty: string) => string;
+      return {
+        sanitized: fn('<a href="https://example.com">link</a>'),
+      };
+    });
+
+    // Anchor tags should have nofollow, noopener, noreferrer added
+    expect(result.sanitized).toContain("nofollow");
+    expect(result.sanitized).toContain("noopener");
+    expect(result.sanitized).toContain("noreferrer");
   });
 });

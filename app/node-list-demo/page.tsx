@@ -4,13 +4,16 @@
  * Demonstrates the NodeCard and NodeList components with XSS-safe
  * rendering of on-chain node data. Includes mock nodes with a
  * variety of metadata fields.
+ *
+ * Exposes sanitizeNodeString on window for E2E testing.
  */
 
 'use client'
 
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { NodeList } from '@/src/components/network/NodeList'
 import { NodeCard } from '@/src/components/network/NodeCard'
+import { sanitizeNodeString } from '@/src/utils/sanitizer'
 import type { NodePosition } from '@/src/types/network'
 
 // ---------------------------------------------------------------------------
@@ -121,6 +124,18 @@ const MOCK_NODES: NodePosition[] = [
 
 export default function NodeListDemoPage() {
   const nodes = useMemo(() => MOCK_NODES, [])
+
+  // Expose sanitizer functions on window for E2E test access
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      ;(window as unknown as Record<string, unknown>).__sanitizeNodeString__ = sanitizeNodeString
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        delete (window as unknown as Record<string, unknown>).__sanitizeNodeString__
+      }
+    }
+  }, [])
 
   return (
     <div className="min-h-screen bg-[#f7f4ee] p-8">
