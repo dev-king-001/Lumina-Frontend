@@ -10,7 +10,6 @@ import { test, expect } from "@playwright/test";
  * Strategy:
  * - Navigate to /node-list-demo which renders NodeCard/NodeList with mock
  *   on-chain data and exposes sanitizeNodeString on window.__sanitizeNodeString__
- * - Verify that allowed tags survive but dangerous patterns are stripped.
  * - Use page.evaluate to call sanitizeNodeString directly on various payloads.
  */
 
@@ -20,22 +19,46 @@ const XSS_PAYLOADS: Record<string, string> = {
   javaScriptUri: '<a href="javascript:alert(1)">click</a>',
   iframe: '<iframe src="https://evil.com"></iframe>',
   encodedScript: "&lt;script&gt;alert(1)&lt;/script&gt;",
-  homoglyph: "＜script＞alert(1)＜/script＞",
+  homoglyph: "\uFF1Cscript\uFF1Ealert(1)\uFF1C/script\uFF1E",
 };
+
+/**
+ * Navigate to the demo page and wait for the sanitizer to be exposed
+ * on window.__sanitizeNodeString__.
+ */
+async function gotoDemoAndWait(page: import("@playwright/test").Page) {
+  await page.goto("/node-list-demo");
+  await page.waitForSelector("[data-testid=node-card]", {
+    state: "attached",
+  });
+  // Wait for useEffect to expose the sanitizer on window
+  await page.waitForFunction(
+    () =>
+      (window as unknown as Record<string, unknown>).__sanitizeNodeString__ !==
+      undefined,
+  );
+}
+
+/**
+ * Call sanitizeNodeString from the page context.
+ */
+async function sanitize(page: import("@playwright/test").Page, input: string) {
+  return page.evaluate((payload: string) => {
+    const fn = (window as unknown as Record<string, unknown>)
+      .__sanitizeNodeString__ as (dirty: string) => string;
+    return fn(payload);
+  }, input);
+}
 
 test.describe("XSS Sanitization — NodeCard rendering", () => {
   test("NodeCard renders node labels with allowed formatting tags", async ({
     page,
   }) => {
-    await page.goto("/node-list-demo");
-    await page.waitForSelector("[data-testid=node-card]", {
-      state: "attached",
-    });
+    await gotoDemoAndWait(page);
 
     const sfoCard = page.locator('[data-node-id="node-002-sfo-edge"]');
     await expect(sfoCard).toBeVisible();
 
-    // The <b> tag should be present in the rendered HTML
     const sfoLabel = sfoCard.locator("h3");
     const sfoLabelHTML = await sfoLabel.innerHTML();
     expect(sfoLabelHTML).toContain("<b>SFO</b>");
@@ -44,179 +67,100 @@ test.describe("XSS Sanitization — NodeCard rendering", () => {
   test("NodeCard renders metadata with allowed italic tag", async ({
     page,
   }) => {
-    await page.goto("/node-list-demo");
-    await page.waitForSelector("[data-testid=node-card]", {
-      state: "attached",
-    });
+    await gotoDemoAndWait(page);
 
     const sfoCard = page.locator('[data-node-id="node-002-sfo-edge"]');
     const cardHTML = await sfoCard.innerHTML();
 
-    // The <i> tag should survive in the description
     expect(cardHTML).toContain("<i>Pacific</i>");
   });
 
   test("NodeCard aria-label strips HTML tags", async ({ page }) => {
-    await page.goto("/node-list-demo");
-    await page.waitForSelector("[data-testid=node-card]", {
-      state: "attached",
-    });
+    await gotoDemoAndWait(page);
 
     const sfoCard = page.locator('[data-node-id="node-002-sfo-edge"]');
     const ariaLabel = await sfoCard.getAttribute("aria-label");
 
-    // aria-label should be plain text without HTML tags
     expect(ariaLabel).not.toContain("<b>");
     expect(ariaLabel).not.toContain("<i>");
     expect(ariaLabel).toContain("SFO Edge Router");
   });
 });
 
-test.describe("XSS Sanitization — sanitizeNodeString direct testing", () => {
-  test("sanitizeNodeString strips script tags", async ({ page }) => {
-    await page.goto("/node-list-demo");
-    await page.waitForSelector("[data-testid=node-card]", {
-      state: "attached",
-    });
+test.describe("XSS Sanitization — sanitizeNodeString", () => {
+  test("strips script tags", async ({ page }) => {
+    await gotoDemoAndWait(page);
 
-    const result = await page.evaluate((payload: string) => {
-      const fn = (window as Record<string, unknown>)
-        .__sanitizeNodeString__ as (dirty: string) => string;
-      if (!fn) return { error: "sanitizeNodeString not exposed" };
-      return { sanitized: fn(payload) };
-    }, XSS_PAYLOADS.scriptTag);
+    const result = await sanitize(page, XSS_PAYLOADS.scriptTag);
 
-    expect(result).toHaveProperty("sanitized");
-    // Script tags should be stripped
-    expect(result.sanitized).not.toContain("<script>");
-    expect(result.sanitized).not.toContain("</script>");
-    // Inner text may survive (depends on KEEP_CONTENT)
+    expect(result).not.toContain("<script>");
+    expect(result).not.toContain("</script>");
   });
 
-  test("sanitizeNodeString strips event handlers", async ({ page }) => {
-    await page.goto("/node-list-demo");
-    await page.waitForSelector("[data-testid=node-card]", {
-      state: "attached",
-    });
+  test("strips event handlers", async ({ page }) => {
+    await gotoDemoAndWait(page);
 
-    const result = await page.evaluate((payload: string) => {
-      const fn = (window as Record<string, unknown>)
-        .__sanitizeNodeString__ as (dirty: string) => string;
-      return { sanitized: fn(payload) };
-    }, XSS_PAYLOADS.eventHandler);
+    const result = await sanitize(page, XSS_PAYLOADS.eventHandler);
 
-    expect(result.sanitized).not.toContain("onerror");
-    expect(result.sanitized).not.toContain("<img");
-    expect(result.sanitized).not.toContain("onmouseover");
+    expect(result).not.toContain("onerror");
+    expect(result).not.toContain("<img");
+    expect(result).not.toContain("onmouseover");
   });
 
-  test("sanitizeNodeString strips JavaScript URIs", async ({ page }) => {
-    await page.goto("/node-list-demo");
-    await page.waitForSelector("[data-testid=node-card]", {
-      state: "attached",
-    });
+  test("strips JavaScript URIs", async ({ page }) => {
+    await gotoDemoAndWait(page);
 
-    const result = await page.evaluate((payload: string) => {
-      const fn = (window as Record<string, unknown>)
-        .__sanitizeNodeString__ as (dirty: string) => string;
-      return { sanitized: fn(payload) };
-    }, XSS_PAYLOADS.javaScriptUri);
+    const result = await sanitize(page, XSS_PAYLOADS.javaScriptUri);
 
-    expect(result.sanitized).not.toContain("javascript:");
+    expect(result).not.toContain("javascript:");
   });
 
-  test("sanitizeNodeString strips iframe tags", async ({ page }) => {
-    await page.goto("/node-list-demo");
-    await page.waitForSelector("[data-testid=node-card]", {
-      state: "attached",
-    });
+  test("strips iframe tags", async ({ page }) => {
+    await gotoDemoAndWait(page);
 
-    const result = await page.evaluate((payload: string) => {
-      const fn = (window as Record<string, unknown>)
-        .__sanitizeNodeString__ as (dirty: string) => string;
-      return { sanitized: fn(payload) };
-    }, XSS_PAYLOADS.iframe);
+    const result = await sanitize(page, XSS_PAYLOADS.iframe);
 
-    expect(result.sanitized).not.toContain("<iframe");
+    expect(result).not.toContain("<iframe");
   });
 
-  test("sanitizeNodeString neutralizes encoded HTML entities", async ({
-    page,
-  }) => {
-    await page.goto("/node-list-demo");
-    await page.waitForSelector("[data-testid=node-card]", {
-      state: "attached",
-    });
+  test("neutralizes encoded HTML entities", async ({ page }) => {
+    await gotoDemoAndWait(page);
 
-    const result = await page.evaluate((payload: string) => {
-      const fn = (window as Record<string, unknown>)
-        .__sanitizeNodeString__ as (dirty: string) => string;
-      return { sanitized: fn(payload) };
-    }, XSS_PAYLOADS.encodedScript);
+    const result = await sanitize(page, XSS_PAYLOADS.encodedScript);
 
-    // Encoded entities should NOT decode into real script tags
-    expect(result.sanitized).not.toContain("<script>");
-    expect(result.sanitized).not.toContain("</script>");
+    expect(result).not.toContain("<script>");
+    expect(result).not.toContain("</script>");
   });
 
-  test("sanitizeNodeString handles Unicode homoglyph attacks", async ({
-    page,
-  }) => {
-    await page.goto("/node-list-demo");
-    await page.waitForSelector("[data-testid=node-card]", {
-      state: "attached",
-    });
+  test("handles Unicode homoglyph attacks", async ({ page }) => {
+    await gotoDemoAndWait(page);
 
-    const result = await page.evaluate((payload: string) => {
-      const fn = (window as Record<string, unknown>)
-        .__sanitizeNodeString__ as (dirty: string) => string;
-      return { sanitized: fn(payload) };
-    }, XSS_PAYLOADS.homoglyph);
+    const result = await sanitize(page, XSS_PAYLOADS.homoglyph);
 
-    // Homoglyph characters should not produce functional HTML tags
-    expect(result.sanitized).not.toMatch(/<script[^>]*>/i);
+    // Fullwidth angle brackets (U+FF1C, U+FF1E) should not produce HTML tags
+    expect(result).not.toMatch(/<script[^>]*>/i);
   });
 
-  test("sanitizeNodeString preserves allowed formatting tags", async ({
-    page,
-  }) => {
-    await page.goto("/node-list-demo");
-    await page.waitForSelector("[data-testid=node-card]", {
-      state: "attached",
-    });
+  test("preserves allowed formatting tags", async ({ page }) => {
+    await gotoDemoAndWait(page);
 
-    const result = await page.evaluate(() => {
-      const fn = (window as Record<string, unknown>)
-        .__sanitizeNodeString__ as (dirty: string) => string;
-      return { sanitized: fn("<b>Bold</b> and <i>italic</i> text") };
-    });
+    const result = await sanitize(page, "<b>Bold</b> and <i>italic</i> text");
 
-    // Allowed tags should survive
-    expect(result.sanitized).toContain("<b>");
-    expect(result.sanitized).toContain("<i>");
-    // Dangerous tags should NOT survive even if mixed in
-    expect(result.sanitized).not.toContain("<script>");
+    expect(result).toContain("<b>");
+    expect(result).toContain("<i>");
+    expect(result).not.toContain("<script>");
   });
 
-  test("sanitizeNodeString adds rel attributes to anchor tags", async ({
-    page,
-  }) => {
-    await page.goto("/node-list-demo");
-    await page.waitForSelector("[data-testid=node-card]", {
-      state: "attached",
-    });
+  test("adds rel attributes to anchor tags", async ({ page }) => {
+    await gotoDemoAndWait(page);
 
-    const result = await page.evaluate(() => {
-      const fn = (window as Record<string, unknown>)
-        .__sanitizeNodeString__ as (dirty: string) => string;
-      return {
-        sanitized: fn('<a href="https://example.com">link</a>'),
-      };
-    });
+    const result = await sanitize(
+      page,
+      '<a href="https://example.com">link</a>',
+    );
 
-    // Anchor tags should have nofollow, noopener, noreferrer added
-    expect(result.sanitized).toContain("nofollow");
-    expect(result.sanitized).toContain("noopener");
-    expect(result.sanitized).toContain("noreferrer");
+    expect(result).toContain("nofollow");
+    expect(result).toContain("noopener");
+    expect(result).toContain("noreferrer");
   });
 });
