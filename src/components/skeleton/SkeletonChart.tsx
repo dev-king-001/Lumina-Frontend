@@ -1,7 +1,6 @@
 'use client'
 
 import { useMemo } from 'react'
-import '../../styles/skeleton.css'
 
 export interface SkeletonChartProps {
   bars?: number

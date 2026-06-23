@@ -1,7 +1,6 @@
 'use client'
 
 import { SkeletonText } from './SkeletonText'
-import '../../styles/skeleton.css'
 
 export type SkeletonCardVariant = 'node' | 'alert' | 'metric'
 

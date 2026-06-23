@@ -1,7 +1,5 @@
 'use client'
 
-import '../../styles/skeleton.css'
-
 type SkeletonTextWidth = 'sm' | 'md' | 'lg' | 'full'
 
 export interface SkeletonTextProps {

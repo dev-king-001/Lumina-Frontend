@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "../src/styles/skeleton.css";
 
 :root {
   --color-bg: #f7f4ee;
