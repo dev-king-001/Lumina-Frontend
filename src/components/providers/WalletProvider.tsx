@@ -10,6 +10,10 @@ import {
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { setWalletTransitioningRef } from "@/src/lib/queryClient";
+import {
+  getSharedStateSync,
+  type WalletChangePayload,
+} from "@/src/services/sharedStateSync";
 
 export interface WalletContextValue {
   publicKey: string | null;
@@ -46,9 +50,49 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const transitioningRef = useRef(false);
   const prevPublicKeyRef = useRef<string | null>(null);
+  const latestWalletTimestampRef = useRef(0);
 
   useEffect(() => {
     setWalletTransitioningRef(transitioningRef);
+  }, []);
+
+  const applyWalletChange = useCallback(
+    async (payload: WalletChangePayload, timestamp: number) => {
+      if (timestamp < latestWalletTimestampRef.current) return;
+      latestWalletTimestampRef.current = timestamp;
+
+      transitioningRef.current = true;
+      setIsTransitioning(true);
+
+      await queryClient.cancelQueries();
+
+      const nextPublicKey = payload.publicKey;
+      const previousPublicKey = prevPublicKeyRef.current;
+
+      if (previousPublicKey !== nextPublicKey) {
+        setGeneration((g) => payload.generation ?? g + 1);
+      }
+
+      if (nextPublicKey) {
+        queryClient.invalidateQueries();
+      } else {
+        queryClient.clear();
+      }
+
+      setPublicKey(nextPublicKey);
+      prevPublicKeyRef.current = nextPublicKey;
+
+      transitioningRef.current = false;
+      setIsTransitioning(false);
+    },
+    [queryClient],
+  );
+
+  const publishWalletChange = useCallback((nextPublicKey: string | null) => {
+    const message = getSharedStateSync().publish("wallet_change", {
+      publicKey: nextPublicKey,
+    });
+    latestWalletTimestampRef.current = message.timestamp;
   }, []);
 
   const handleAccountChange = useCallback(async () => {
@@ -58,28 +102,44 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     await queryClient.cancelQueries();
 
     try {
-      if (window.freighter) {
-        const info = await window.freighter.getUserInfo();
-        const newKey = info.publicKey ?? null;
+      const info = window.freighter ? await window.freighter.getUserInfo() : {};
+      const newKey = info.publicKey ?? null;
 
-        // Bump generation when the key changes, but keep the update
-        // outside setPublicKey's functional updater — calling a state
-        // setter inside another state updater is impure and will be
-        // silently discarded by React 18+.
-        if (prevPublicKeyRef.current !== newKey) {
-          setGeneration((g) => g + 1);
-        }
-        setPublicKey(newKey);
-        prevPublicKeyRef.current = newKey;
+      if (prevPublicKeyRef.current !== newKey) {
+        setGeneration((g) => g + 1);
       }
+
+      setPublicKey(newKey);
+      prevPublicKeyRef.current = newKey;
+      if (newKey) {
+        queryClient.invalidateQueries();
+      } else {
+        queryClient.clear();
+      }
+      publishWalletChange(newKey);
     } catch {
       setPublicKey(null);
       prevPublicKeyRef.current = null;
+      queryClient.clear();
+      publishWalletChange(null);
     } finally {
       transitioningRef.current = false;
       setIsTransitioning(false);
     }
-  }, [queryClient]);
+  }, [publishWalletChange, queryClient]);
+
+  useEffect(() => {
+    const sync = getSharedStateSync();
+    return sync.subscribe((message) => {
+      if (message.type === "wallet_change") {
+        void applyWalletChange(message.payload, message.timestamp);
+      }
+
+      if (message.type === "auth_expire") {
+        void applyWalletChange({ publicKey: null }, message.timestamp);
+      }
+    });
+  }, [applyWalletChange]);
 
   useEffect(() => {
     const handler = () => {
@@ -101,8 +161,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       await handleAccountChange();
     } catch {
       setPublicKey(null);
+      queryClient.clear();
+      publishWalletChange(null);
     }
-  }, [handleAccountChange]);
+  }, [handleAccountChange, publishWalletChange, queryClient]);
 
   const disconnect = useCallback(() => {
     transitioningRef.current = true;
@@ -114,10 +176,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setPublicKey(null);
     setGeneration((g) => g + 1);
     prevPublicKeyRef.current = null;
+    publishWalletChange(null);
 
     transitioningRef.current = false;
     setIsTransitioning(false);
-  }, [queryClient]);
+  }, [publishWalletChange, queryClient]);
 
   const value = useMemo<WalletContextValue>(
     () => ({

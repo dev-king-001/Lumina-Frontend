@@ -8,9 +8,15 @@ import { WalletProvider } from "@/src/components/providers/WalletProvider";
 import { WalletStatusBar } from "@/src/components/shared/WalletStatusBar";
 import { ThemeProvider } from "@/src/components/providers/ThemeProvider";
 import { useOfflineSync, OfflineSyncContext } from "@/src/hooks/useOfflineSync";
+import { useSharedStateQuerySync } from "@/src/hooks/useSharedStateQuerySync";
 
 function RequestQueueInstigator() {
   useEffect(() => installOfflineSync(), []);
+  return null;
+}
+
+function SharedStateQueryBridge() {
+  useSharedStateQuerySync();
   return null;
 }
 
@@ -29,6 +35,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <RequestQueueInstigator />
+      <SharedStateQueryBridge />
       <ThemeProvider>
         <WalletProvider>
           <OfflineSyncProvider>

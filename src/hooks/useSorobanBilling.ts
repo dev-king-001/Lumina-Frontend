@@ -22,6 +22,7 @@ import {
   type BalanceDelta,
   type OptimisticSnapshot,
 } from "@/src/lib/OptimisticTransactionManager";
+import { broadcastOperationComplete } from "@/src/hooks/useSharedStateQuerySync";
 
 export interface BillingData {
   balance: string;
@@ -32,12 +33,12 @@ export interface BillingData {
 
 export function useSorobanBilling(defaultContext: ErrorDecodeContext = {}) {
   const [billingError, setBillingError] = useState<DecodedError | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const queryClient = useQueryClient();
   const optimisticManagerRef = useRef<OptimisticTransactionManager | null>(null);
   const submitButtonDisabled = useRef(false);
 
-  // Initialize optimistic manager
-  if (!optimisticManagerRef.current) {
+  if (optimisticManagerRef.current == null) {
     optimisticManagerRef.current = new OptimisticTransactionManager(queryClient);
   }
 
@@ -136,9 +137,21 @@ export function useSorobanBilling(defaultContext: ErrorDecodeContext = {}) {
         updateRecord(record.idempotencyKey, { status: "failed" });
       }
 
+      broadcastOperationComplete({
+        operationId: record.idempotencyKey,
+        status:
+          result.status === "SUCCESS"
+            ? "confirmed"
+            : result.status === "PENDING"
+              ? "pending"
+              : "failed",
+        queryKey,
+        txHash: result.hash,
+      });
+
       return result;
     },
-    [enqueue],
+    [enqueue, queryKey],
   );
 
   const submitWithOptimisticUpdate = useCallback(
@@ -161,6 +174,7 @@ export function useSorobanBilling(defaultContext: ErrorDecodeContext = {}) {
       }
 
       submitButtonDisabled.current = true;
+      setIsSubmitting(true);
 
       const previousData = queryClient.getQueryData(queryKey);
       
@@ -210,6 +224,13 @@ export function useSorobanBilling(defaultContext: ErrorDecodeContext = {}) {
           manager.removeSnapshot(nonce);
           manager.clearSubmitting(nonce);
 
+          broadcastOperationComplete({
+            operationId: nonce,
+            status: result.status === "SUCCESS" ? "confirmed" : "pending",
+            queryKey,
+            txHash: result.hash,
+          });
+
           // Refetch to get accurate backend state
           setTimeout(() => {
             refetch();
@@ -248,6 +269,7 @@ export function useSorobanBilling(defaultContext: ErrorDecodeContext = {}) {
           error: decodedError.userMessage,
         };
       } finally {
+        setIsSubmitting(false);
         submitButtonDisabled.current = false;
       }
     },
@@ -268,7 +290,7 @@ export function useSorobanBilling(defaultContext: ErrorDecodeContext = {}) {
     cancelTransaction,
     clearOldCompleted,
     refreshQueue,
-    isSubmitting: submitButtonDisabled.current,
+    isSubmitting,
     refetchBalance: refetch,
   };
 }
