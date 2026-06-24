@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { AnalyticsTimeSeries } from '@/src/components/charts/AnalyticsTimeSeries'
+import { SkeletonChart } from '@/src/components/skeleton/SkeletonChart'
 import { useNetworkAnalytics } from '@/src/hooks/useNetworkAnalytics'
 import type { AnalyticsDataPoint, AggregatedResult, RollupGranularity } from '@/src/types/network'
 
@@ -98,7 +99,11 @@ export default function AnalyticsPage() {
           </button>
         </div>
 
-        <AnalyticsTimeSeries data={result} loading={loading} />
+        {loading ? (
+          <SkeletonChart bars={20} height={300} />
+        ) : (
+          <AnalyticsTimeSeries data={result} loading={false} />
+        )}
       </div>
     </main>
   )
