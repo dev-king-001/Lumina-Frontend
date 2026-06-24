@@ -18,7 +18,7 @@ const widthClass: Record<SkeletonTextWidth, string> = {
 export function SkeletonText({ lines = 3, width = 'lg', className = '' }: SkeletonTextProps) {
   return (
     <div className={`${className}`} aria-hidden="true">
-      {Array.from({ length }, (_, i) => (
+      {Array.from({ length: lines }, (_, i) => (
         <div
           key={i}
           className={`skeleton skeleton-text ${i === lines - 1 ? widthClass[width] : 'skeleton-text--full'}`}
